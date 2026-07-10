@@ -31,6 +31,7 @@ import {
   MessageSquareIcon,
   SettingsIcon,
   SquarePenIcon,
+  TerminalIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -56,6 +57,8 @@ import { filesystemEnvironment } from "../state/filesystem";
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import { sourceControlEnvironment } from "../state/sourceControl";
+import { terminalEnvironment } from "../state/terminal";
+import { useKnownTerminalSessions } from "../state/terminalSessions";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
@@ -95,6 +98,7 @@ import {
   buildBrowseGroups,
   buildProjectActionItems,
   buildRootGroups,
+  buildTerminalGroups,
   buildThreadActionItems,
   type CommandPaletteActionItem,
   type CommandPaletteSubmenuItem,
@@ -103,6 +107,8 @@ import {
   filterCommandPaletteGroups,
   getCommandPaletteInputPlaceholder,
   getCommandPaletteMode,
+  getTerminalFilterQuery,
+  isTerminalQuery,
   ITEM_ICON_CLASS,
   RECENT_THREAD_LIMIT,
 } from "./CommandPalette.logic";
@@ -127,6 +133,7 @@ import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { ComposerHandleContext, useComposerHandleContext } from "../composerHandleContext";
 import type { ChatComposerHandle } from "./chat/ChatComposer";
+import { nextTerminalId, resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 
@@ -564,7 +571,13 @@ function OpenCommandPaletteDialog(props: {
   const isRemoteProjectRepositoryStep = addProjectCloneFlow?.step === "repository";
   const isBrowsing =
     !isRemoteProjectRepositoryStep && isFilesystemBrowseQuery(query, browseEnvironmentPlatform);
-  const paletteMode = getCommandPaletteMode({ currentView, isBrowsing });
+  const isTerminalMode =
+    currentView === null && !isRemoteProjectCloneFlow && isTerminalQuery(query);
+  const paletteMode = getCommandPaletteMode({
+    currentView,
+    isBrowsing,
+    isTerminal: isTerminalMode,
+  });
   const getAddProjectInitialQueryForEnvironment = useCallback(
     (environmentId: EnvironmentId | null): string => {
       const environment = environments.find(
@@ -601,6 +614,106 @@ function OpenCommandPaletteDialog(props: {
     browseEnvironmentId && currentProjectEnvironmentId === browseEnvironmentId
       ? currentProjectCwd
       : null;
+
+  const activeThreadRef = useMemo(
+    () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
+    [activeThread],
+  );
+  const terminalCwd = activeThread?.worktreePath ?? currentProjectCwd;
+  const knownTerminalSessions = useKnownTerminalSessions({
+    environmentId: currentProjectEnvironmentId,
+    threadId: activeThreadId ?? null,
+  });
+  const openTerminal = useAtomCommand(terminalEnvironment.open, { reportFailure: false });
+  const ensureTerminalUi = useTerminalUiStateStore((storeState) => storeState.ensureTerminal);
+
+  const terminalActionItems = useMemo<CommandPaletteActionItem[]>(() => {
+    if (!activeThreadRef) return [];
+    return knownTerminalSessions.map((session) => {
+      const terminalId = session.target.terminalId;
+      const summary = session.state.summary;
+      const label = resolveTerminalSessionLabel(terminalId, summary);
+      const statusLabel = session.state.hasRunningSubprocess
+        ? "Running"
+        : session.state.status === "exited"
+          ? "Exited"
+          : session.state.status === "error"
+            ? "Error"
+            : "Idle";
+      const descriptionParts = [statusLabel];
+      if (summary?.pid) {
+        descriptionParts.push(`pid ${summary.pid}`);
+      }
+
+      return {
+        kind: "action" as const,
+        value: `terminal:${terminalId}`,
+        searchTerms: [
+          "terminal",
+          "term",
+          label,
+          statusLabel,
+          terminalId,
+          summary?.pid ? String(summary.pid) : "",
+        ],
+        title: label,
+        description: descriptionParts.join(" · "),
+        icon: <TerminalIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          if (!activeThreadRef) return;
+          ensureTerminalUi(activeThreadRef, terminalId, { open: true, active: true });
+        },
+      };
+    });
+  }, [activeThreadRef, ensureTerminalUi, knownTerminalSessions]);
+
+  const newTerminalActionItem = useMemo<CommandPaletteActionItem>(
+    () => ({
+      kind: "action" as const,
+      value: "terminal:new",
+      searchTerms: ["terminal", "term", "new terminal", "shell", "zsh", "bash"],
+      title: "New Terminal",
+      ...(terminalCwd ? { description: terminalCwd } : {}),
+      icon: <TerminalIcon className={ITEM_ICON_CLASS} />,
+      disabled: !activeThreadRef || !terminalCwd,
+      run: async () => {
+        if (!activeThreadRef || !terminalCwd) return;
+        const terminalId = nextTerminalId(
+          knownTerminalSessions.map((session) => session.target.terminalId),
+        );
+        ensureTerminalUi(activeThreadRef, terminalId, { open: true, active: true });
+        await openTerminal({
+          environmentId: activeThreadRef.environmentId,
+          input: {
+            threadId: activeThreadRef.threadId,
+            terminalId,
+            cwd: terminalCwd,
+            ...(activeThread?.worktreePath ? { worktreePath: activeThread.worktreePath } : {}),
+          },
+        });
+      },
+    }),
+    [
+      activeThread?.worktreePath,
+      activeThreadRef,
+      ensureTerminalUi,
+      knownTerminalSessions,
+      openTerminal,
+      terminalCwd,
+    ],
+  );
+
+  const terminalFilterQuery = getTerminalFilterQuery(query);
+  const terminalGroups = useMemo(
+    () =>
+      buildTerminalGroups({
+        newTerminalItem: newTerminalActionItem,
+        terminalItems: terminalActionItems,
+        filterQuery: terminalFilterQuery,
+      }),
+    [newTerminalActionItem, terminalActionItems, terminalFilterQuery],
+  );
+
   const relativePathNeedsActiveProject =
     isExplicitRelativeProjectPath(query.trim()) && currentProjectCwdForBrowse === null;
   const browseDirectoryPath = isBrowsing ? getBrowseDirectoryPath(query) : "";
@@ -1414,6 +1527,8 @@ function OpenCommandPaletteDialog(props: {
     displayedGroups = relativePathNeedsActiveProject ? [] : cloneDestinationBrowseGroups;
   } else if (isBrowsing) {
     displayedGroups = relativePathNeedsActiveProject ? [] : browseGroups;
+  } else if (isTerminalMode) {
+    displayedGroups = terminalGroups;
   }
 
   const inputPlaceholder =
@@ -1711,7 +1826,11 @@ function OpenCommandPaletteDialog(props: {
                 ? {
                     startAddon: <FolderPlusIcon />,
                   }
-                : {})}
+                : isTerminalMode && !isSubmenu
+                  ? {
+                      startAddon: <TerminalIcon />,
+                    }
+                  : {})}
             onKeyDown={handleKeyDown}
           />
           {addProjectCloneFlow?.step === "repository" ? (
@@ -1830,7 +1949,9 @@ function OpenCommandPaletteDialog(props: {
                         emptyStateMessage:
                           "Press Enter to create this folder and add it as a project.",
                       }
-                    : {})}
+                    : isTerminalMode && !activeThreadRef
+                      ? { emptyStateMessage: "Open a thread to manage its terminals." }
+                      : {})}
           />
         </CommandPanel>
         <CommandFooter className="gap-3 max-sm:flex-col max-sm:items-start">
