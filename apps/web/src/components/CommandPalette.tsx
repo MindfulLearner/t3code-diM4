@@ -46,6 +46,10 @@ import {
 } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import { OpenAddProjectCommandPaletteProvider } from "../commandPaletteContext";
+import {
+  ProjectScriptRunnerContext,
+  type ProjectScriptRunnerRef,
+} from "../projectScriptRunnerContext";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
@@ -127,6 +131,9 @@ import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { ComposerHandleContext, useComposerHandleContext } from "../composerHandleContext";
 import type { ChatComposerHandle } from "./chat/ChatComposer";
+import { commandForProjectScript } from "../projectScripts";
+import type { ProjectScript } from "../types";
+import { ScriptIcon } from "./ProjectScriptsControl";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 
@@ -335,7 +342,7 @@ function errorMessage(error: unknown): string {
 }
 
 interface CommandPaletteOpenIntent {
-  readonly kind: "add-project";
+  readonly kind: "add-project" | "actions";
 }
 
 interface CommandPaletteUiState {
@@ -347,6 +354,7 @@ type CommandPaletteUiAction =
   | { readonly _tag: "SetOpen"; readonly open: boolean }
   | { readonly _tag: "Toggle" }
   | { readonly _tag: "OpenAddProject" }
+  | { readonly _tag: "OpenActions" }
   | { readonly _tag: "ClearOpenIntent" };
 
 function reduceCommandPaletteUiState(
@@ -363,6 +371,8 @@ function reduceCommandPaletteUiState(
       return { open: !state.open, openIntent: null };
     case "OpenAddProject":
       return { open: true, openIntent: { kind: "add-project" } };
+    case "OpenActions":
+      return { open: true, openIntent: { kind: "actions" } };
     case "ClearOpenIntent":
       return state.openIntent ? { ...state, openIntent: null } : state;
   }
@@ -376,9 +386,11 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   const setOpen = useCallback((open: boolean) => dispatch({ _tag: "SetOpen", open }), []);
   const toggleOpen = useCallback(() => dispatch({ _tag: "Toggle" }), []);
   const openAddProject = useCallback(() => dispatch({ _tag: "OpenAddProject" }), []);
+  const openActions = useCallback(() => dispatch({ _tag: "OpenActions" }), []);
   const clearOpenIntent = useCallback(() => dispatch({ _tag: "ClearOpenIntent" }), []);
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const composerHandleRef = useRef<ChatComposerHandle | null>(null);
+  const projectScriptRunnerRef = useRef<((script: ProjectScript) => Promise<void>) | null>(null);
   const routeTarget = useParams({
     strict: false,
     select: (params) => resolveThreadRouteTarget(params),
@@ -399,29 +411,38 @@ export function CommandPalette({ children }: { children: ReactNode }) {
           terminalOpen,
         },
       });
-      if (command !== "commandPalette.toggle") {
+      if (command === "commandPalette.toggle") {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleOpen();
         return;
       }
-      event.preventDefault();
-      event.stopPropagation();
-      toggleOpen();
+      if (command === "commandPalette.openActions") {
+        event.preventDefault();
+        event.stopPropagation();
+        openActions();
+        return;
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [keybindings, terminalOpen, toggleOpen]);
+  }, [keybindings, openActions, terminalOpen, toggleOpen]);
 
   return (
     <OpenAddProjectCommandPaletteProvider openAddProject={openAddProject}>
       <ComposerHandleContext value={composerHandleRef}>
-        <CommandDialog open={state.open} onOpenChange={setOpen}>
-          {children}
-          <CommandPaletteDialog
-            open={state.open}
-            openIntent={state.openIntent}
-            setOpen={setOpen}
-            clearOpenIntent={clearOpenIntent}
-          />
-        </CommandDialog>
+        <ProjectScriptRunnerContext value={projectScriptRunnerRef}>
+          <CommandDialog open={state.open} onOpenChange={setOpen}>
+            {children}
+            <CommandPaletteDialog
+              open={state.open}
+              openIntent={state.openIntent}
+              setOpen={setOpen}
+              clearOpenIntent={clearOpenIntent}
+              projectScriptRunnerRef={projectScriptRunnerRef}
+            />
+          </CommandDialog>
+        </ProjectScriptRunnerContext>
       </ComposerHandleContext>
     </OpenAddProjectCommandPaletteProvider>
   );
@@ -432,6 +453,7 @@ function CommandPaletteDialog(props: {
   readonly openIntent: CommandPaletteOpenIntent | null;
   readonly setOpen: (open: boolean) => void;
   readonly clearOpenIntent: () => void;
+  readonly projectScriptRunnerRef: ProjectScriptRunnerRef;
 }) {
   if (!props.open) {
     return null;
@@ -442,6 +464,7 @@ function CommandPaletteDialog(props: {
       openIntent={props.openIntent}
       setOpen={props.setOpen}
       clearOpenIntent={props.clearOpenIntent}
+      projectScriptRunnerRef={props.projectScriptRunnerRef}
     />
   );
 }
@@ -450,9 +473,10 @@ function OpenCommandPaletteDialog(props: {
   readonly openIntent: CommandPaletteOpenIntent | null;
   readonly setOpen: (open: boolean) => void;
   readonly clearOpenIntent: () => void;
+  readonly projectScriptRunnerRef: ProjectScriptRunnerRef;
 }) {
   const navigate = useNavigate();
-  const { clearOpenIntent, openIntent, setOpen } = props;
+  const { clearOpenIntent, openIntent, setOpen, projectScriptRunnerRef } = props;
   const composerHandleRef = useComposerHandleContext();
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -960,6 +984,19 @@ function OpenCommandPaletteDialog(props: {
     openAddProjectFlow();
   }, [clearOpenIntent, openAddProjectFlow, openIntent]);
 
+  useLayoutEffect(() => {
+    if (openIntent?.kind !== "actions") {
+      return;
+    }
+    clearOpenIntent();
+    setQuery(">");
+  }, [clearOpenIntent, openIntent]);
+
+  const activeProjectScripts = useMemo(
+    () => projects.find((project) => project.id === currentProjectId)?.scripts ?? [],
+    [currentProjectId, projects],
+  );
+
   const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
 
   if (projects.length > 0) {
@@ -998,6 +1035,20 @@ function OpenCommandPaletteDialog(props: {
       icon: <SquarePenIcon className={ITEM_ICON_CLASS} />,
       addonIcon: <SquarePenIcon className={ADDON_ICON_CLASS} />,
       groups: [{ value: "projects", label: "Projects", items: projectThreadItems }],
+    });
+  }
+
+  for (const script of activeProjectScripts) {
+    actionItems.push({
+      kind: "action",
+      value: `script:${script.id}`,
+      searchTerms: ["run task", "task", "run", script.name],
+      title: `Run Task: ${script.name}`,
+      icon: <ScriptIcon icon={script.icon} className={ITEM_ICON_CLASS} />,
+      shortcutCommand: commandForProjectScript(script.id),
+      run: async () => {
+        await projectScriptRunnerRef.current?.(script);
+      },
     });
   }
 

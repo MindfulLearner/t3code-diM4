@@ -69,7 +69,7 @@ const SCRIPT_ICONS: Array<{ id: ProjectScriptIcon; label: string }> = [
   { id: "debug", label: "Debug" },
 ];
 
-function ScriptIcon({
+export function ScriptIcon({
   icon,
   className = "size-3.5",
 }: {
