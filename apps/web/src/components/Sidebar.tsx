@@ -2769,7 +2769,7 @@ function SidebarBrand() {
         Code
       </span>
       <span className="sidebar-brand-stage shrink-0 items-center whitespace-nowrap rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-[0.18em] text-muted-foreground/60">
-        dev diM4
+        {stageLabel} diM4
       </span>
     </Link>
   );
