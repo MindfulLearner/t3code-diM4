@@ -241,6 +241,7 @@ import {
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useComposerHandleContext } from "../composerHandleContext";
+import { useProjectScriptRunnerContext } from "../projectScriptRunnerContext";
 import { sanitizeThreadErrorMessage } from "~/rpc/transportError";
 import { RightPanelSheet } from "./RightPanelSheet";
 import { previewEnvironment } from "../state/preview";
@@ -2560,6 +2561,17 @@ function ChatViewContent(props: ChatViewProps) {
       writeTerminal,
     ],
   );
+
+  const projectScriptRunnerRef = useProjectScriptRunnerContext();
+  useEffect(() => {
+    if (!projectScriptRunnerRef) return;
+    projectScriptRunnerRef.current = runProjectScript;
+    return () => {
+      if (projectScriptRunnerRef.current === runProjectScript) {
+        projectScriptRunnerRef.current = null;
+      }
+    };
+  }, [projectScriptRunnerRef, runProjectScript]);
 
   const persistProjectScripts = useCallback(
     async (input: {
