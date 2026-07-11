@@ -116,7 +116,6 @@ const DEFAULT_BINDINGS = compile([
   {
     shortcut: modShortcut("p"),
     command: "commandPalette.toggle",
-    whenAst: whenNot(whenIdentifier("terminalFocus")),
   },
   {
     shortcut: modShortcut("p", { shiftKey: true }),
@@ -502,7 +501,7 @@ describe("chat/editor shortcuts", () => {
     );
   });
 
-  it("matches commandPalette.toggle shortcut outside terminal focus", () => {
+  it("matches commandPalette.toggle shortcut regardless of terminal focus", () => {
     assert.strictEqual(
       resolveShortcutCommand(event({ key: "p", metaKey: true }), DEFAULT_BINDINGS, {
         platform: "MacIntel",
@@ -510,7 +509,7 @@ describe("chat/editor shortcuts", () => {
       }),
       "commandPalette.toggle",
     );
-    assert.notStrictEqual(
+    assert.strictEqual(
       resolveShortcutCommand(event({ key: "p", metaKey: true }), DEFAULT_BINDINGS, {
         platform: "MacIntel",
         context: { terminalFocus: true },

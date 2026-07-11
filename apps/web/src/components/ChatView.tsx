@@ -179,7 +179,11 @@ import {
 import { appendPreviewAnnotationPrompt } from "../lib/previewAnnotation";
 import { appendReviewCommentsToPrompt, type ReviewCommentContext } from "../reviewCommentContext";
 import { environmentCatalog } from "../connection/catalog";
-import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
+import {
+  selectThreadTerminalFocusRequest,
+  selectThreadTerminalUiState,
+  useTerminalUiStateStore,
+} from "../terminalUiStateStore";
 import { useKnownTerminalSessions, useThreadRunningTerminalIds } from "../state/terminalSessions";
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
@@ -1180,6 +1184,10 @@ function ChatViewContent(props: ChatViewProps) {
   const terminalUiState = useTerminalUiStateStore((state) =>
     selectThreadTerminalUiState(state.terminalUiStateByThreadKey, routeThreadRef),
   );
+  const terminalFocusRequestNonce = useTerminalUiStateStore((state) =>
+    selectThreadTerminalFocusRequest(state.focusRequestByThreadKey, routeThreadRef),
+  );
+  const previousTerminalFocusRequestNonceRef = useRef(terminalFocusRequestNonce);
   const openTerminalThreadKeys = useTerminalUiStateStore(
     useShallow((state) =>
       Object.entries(state.terminalUiStateByThreadKey).flatMap(
@@ -3682,6 +3690,17 @@ function ChatViewContent(props: ChatViewProps) {
 
     terminalUiOpenByThreadRef.current[activeThreadKey] = current;
   }, [activeThreadKey, focusComposer, terminalUiState.terminalOpen]);
+
+  // Some callers (e.g. the command palette selecting an already-open, already-active terminal)
+  // need to force-refocus the terminal even when neither `terminalOpen` nor `activeTerminalId`
+  // change. They bump this shared, non-persisted nonce instead of duplicating focus plumbing.
+  useEffect(() => {
+    if (terminalFocusRequestNonce === previousTerminalFocusRequestNonceRef.current) {
+      return;
+    }
+    previousTerminalFocusRequestNonceRef.current = terminalFocusRequestNonce;
+    setTerminalFocusRequestId((value) => value + 1);
+  }, [terminalFocusRequestNonce]);
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {

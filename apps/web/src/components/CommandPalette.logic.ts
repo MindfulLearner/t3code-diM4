@@ -52,7 +52,23 @@ export interface CommandPaletteView {
   readonly initialQuery?: string;
 }
 
-export type CommandPaletteMode = "root" | "root-browse" | "submenu" | "submenu-browse";
+export type CommandPaletteMode =
+  | "root"
+  | "root-browse"
+  | "root-terminal"
+  | "submenu"
+  | "submenu-browse";
+
+/** Query prefix that switches the root palette into "browse active terminals" mode. */
+export const TERMINAL_QUERY_PREFIX = "term ";
+
+export function isTerminalQuery(query: string): boolean {
+  return query.toLowerCase().startsWith(TERMINAL_QUERY_PREFIX);
+}
+
+export function getTerminalFilterQuery(query: string): string {
+  return query.slice(TERMINAL_QUERY_PREFIX.length).trimStart();
+}
 
 export function filterBrowseEntries(input: {
   browseEntries: ReadonlyArray<FilesystemBrowseEntry>;
@@ -324,11 +340,47 @@ export function buildBrowseGroups(input: {
 export function getCommandPaletteMode(input: {
   currentView: CommandPaletteView | null;
   isBrowsing: boolean;
+  isTerminal: boolean;
 }): CommandPaletteMode {
   if (input.currentView) {
     return input.isBrowsing ? "submenu-browse" : "submenu";
   }
+  if (input.isTerminal) {
+    return "root-terminal";
+  }
   return input.isBrowsing ? "root-browse" : "root";
+}
+
+/**
+ * Builds the "term " root-mode groups: a "New Terminal" action plus the active
+ * terminal sessions for the current thread, filtered by whatever the user typed
+ * after the "term " prefix.
+ */
+export function buildTerminalGroups(input: {
+  newTerminalItem: CommandPaletteActionItem;
+  terminalItems: ReadonlyArray<CommandPaletteActionItem>;
+  filterQuery: string;
+}): CommandPaletteGroup[] {
+  const normalizedFilter = normalizeSearchText(input.filterQuery);
+  const matches = (item: CommandPaletteActionItem): boolean =>
+    normalizedFilter.length === 0 ||
+    normalizeSearchText(item.searchTerms.join(" ")).includes(normalizedFilter);
+
+  const groups: CommandPaletteGroup[] = [];
+  if (matches(input.newTerminalItem)) {
+    groups.push({ value: "terminal-new", label: "Terminal", items: [input.newTerminalItem] });
+  }
+
+  const filteredTerminalItems = input.terminalItems.filter(matches);
+  if (filteredTerminalItems.length > 0) {
+    groups.push({
+      value: "active-terminals",
+      label: "Active Terminals",
+      items: filteredTerminalItems,
+    });
+  }
+
+  return groups;
 }
 
 export function buildRootGroups(input: {
@@ -355,6 +407,8 @@ export function getCommandPaletteInputPlaceholder(mode: CommandPaletteMode): str
       return "Search commands, projects, and threads...";
     case "root-browse":
       return "Enter project path (e.g. ~/projects/my-app)";
+    case "root-terminal":
+      return "Search active terminals...";
     case "submenu":
       return "Search...";
     case "submenu-browse":
