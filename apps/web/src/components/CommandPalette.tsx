@@ -134,6 +134,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { ComposerHandleContext, useComposerHandleContext } from "../composerHandleContext";
 import type { ChatComposerHandle } from "./chat/ChatComposer";
 import { nextTerminalId, resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
+import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 
@@ -461,6 +462,7 @@ function OpenCommandPaletteDialog(props: {
   const navigate = useNavigate();
   const { clearOpenIntent, openIntent, setOpen } = props;
   const composerHandleRef = useComposerHandleContext();
+  const skipComposerFocusOnCloseRef = useRef(false);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const isActionsOnly = deferredQuery.startsWith(">");
@@ -619,13 +621,14 @@ function OpenCommandPaletteDialog(props: {
     () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
     [activeThread],
   );
-  const terminalCwd = activeThread?.worktreePath ?? currentProjectCwd;
   const knownTerminalSessions = useKnownTerminalSessions({
     environmentId: currentProjectEnvironmentId,
     threadId: activeThreadId ?? null,
   });
+  const requestTerminalFocus = useTerminalUiStateStore(
+    (storeState) => storeState.requestTerminalFocus,
+  );
   const openTerminal = useAtomCommand(terminalEnvironment.open, { reportFailure: false });
-  const ensureTerminalUi = useTerminalUiStateStore((storeState) => storeState.ensureTerminal);
 
   const terminalActionItems = useMemo<CommandPaletteActionItem[]>(() => {
     if (!activeThreadRef) return [];
@@ -661,11 +664,16 @@ function OpenCommandPaletteDialog(props: {
         icon: <TerminalIcon className={ITEM_ICON_CLASS} />,
         run: async () => {
           if (!activeThreadRef) return;
-          ensureTerminalUi(activeThreadRef, terminalId, { open: true, active: true });
+          requestTerminalFocus(activeThreadRef, terminalId);
         },
       };
     });
-  }, [activeThreadRef, ensureTerminalUi, knownTerminalSessions]);
+  }, [activeThreadRef, knownTerminalSessions, requestTerminalFocus]);
+
+  const terminalWorktreePath = activeThread?.worktreePath ?? null;
+  const terminalCwd = currentProjectCwd
+    ? projectScriptCwd({ project: { cwd: currentProjectCwd }, worktreePath: terminalWorktreePath })
+    : null;
 
   const newTerminalActionItem = useMemo<CommandPaletteActionItem>(
     () => ({
@@ -677,29 +685,34 @@ function OpenCommandPaletteDialog(props: {
       icon: <TerminalIcon className={ITEM_ICON_CLASS} />,
       disabled: !activeThreadRef || !terminalCwd,
       run: async () => {
-        if (!activeThreadRef || !terminalCwd) return;
+        if (!activeThreadRef || !terminalCwd || !currentProjectCwd) return;
         const terminalId = nextTerminalId(
           knownTerminalSessions.map((session) => session.target.terminalId),
         );
-        ensureTerminalUi(activeThreadRef, terminalId, { open: true, active: true });
+        requestTerminalFocus(activeThreadRef, terminalId);
         await openTerminal({
           environmentId: activeThreadRef.environmentId,
           input: {
             threadId: activeThreadRef.threadId,
             terminalId,
             cwd: terminalCwd,
-            ...(activeThread?.worktreePath ? { worktreePath: activeThread.worktreePath } : {}),
+            ...(terminalWorktreePath ? { worktreePath: terminalWorktreePath } : {}),
+            env: projectScriptRuntimeEnv({
+              project: { cwd: currentProjectCwd },
+              worktreePath: terminalWorktreePath,
+            }),
           },
         });
       },
     }),
     [
-      activeThread?.worktreePath,
       activeThreadRef,
-      ensureTerminalUi,
+      currentProjectCwd,
       knownTerminalSessions,
       openTerminal,
+      requestTerminalFocus,
       terminalCwd,
+      terminalWorktreePath,
     ],
   );
 
@@ -1644,6 +1657,8 @@ function OpenCommandPaletteDialog(props: {
     }
 
     if (!item.keepOpen) {
+      skipComposerFocusOnCloseRef.current =
+        typeof item.value === "string" && item.value.startsWith("terminal:");
       setOpen(false);
     }
 
@@ -1776,6 +1791,10 @@ function OpenCommandPaletteDialog(props: {
       data-command-palette="true"
       data-testid="command-palette"
       finalFocus={() => {
+        if (skipComposerFocusOnCloseRef.current) {
+          skipComposerFocusOnCloseRef.current = false;
+          return false;
+        }
         composerHandleRef?.current?.focusAtEnd();
         return false;
       }}
