@@ -621,10 +621,29 @@ function OpenCommandPaletteDialog(props: {
     () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
     [activeThread],
   );
-  const knownTerminalSessions = useKnownTerminalSessions({
+  // Project-wide, not thread-scoped: passing threadId: null returns every known terminal in the
+  // environment, filtered below down to threads belonging to the active project.
+  const environmentTerminalSessions = useKnownTerminalSessions({
     environmentId: currentProjectEnvironmentId,
-    threadId: activeThreadId ?? null,
+    threadId: null,
   });
+  const projectThreadById = useMemo(() => {
+    const next = new Map<string, (typeof threads)[number]>();
+    if (!currentProjectId) return next;
+    for (const thread of threads) {
+      if (thread.projectId === currentProjectId) {
+        next.set(thread.id, thread);
+      }
+    }
+    return next;
+  }, [currentProjectId, threads]);
+  const knownTerminalSessions = useMemo(
+    () =>
+      environmentTerminalSessions.filter((session) =>
+        projectThreadById.has(session.target.threadId),
+      ),
+    [environmentTerminalSessions, projectThreadById],
+  );
   const requestTerminalFocus = useTerminalUiStateStore(
     (storeState) => storeState.requestTerminalFocus,
   );
@@ -643,14 +662,19 @@ function OpenCommandPaletteDialog(props: {
           : session.state.status === "error"
             ? "Error"
             : "Idle";
+      const isActiveThread = session.target.threadId === activeThreadId;
+      const originThreadTitle = projectThreadById.get(session.target.threadId)?.title ?? null;
       const descriptionParts = [statusLabel];
       if (summary?.pid) {
         descriptionParts.push(`pid ${summary.pid}`);
       }
+      descriptionParts.push(
+        isActiveThread ? "Current thread" : (originThreadTitle ?? "Other thread"),
+      );
 
       return {
         kind: "action" as const,
-        value: `terminal:${terminalId}`,
+        value: `terminal:${session.target.threadId}:${terminalId}`,
         searchTerms: [
           "terminal",
           "term",
@@ -658,17 +682,34 @@ function OpenCommandPaletteDialog(props: {
           statusLabel,
           terminalId,
           summary?.pid ? String(summary.pid) : "",
+          originThreadTitle ?? "",
         ],
         title: label,
         description: descriptionParts.join(" · "),
         icon: <TerminalIcon className={ITEM_ICON_CLASS} />,
         run: async () => {
-          if (!activeThreadRef) return;
-          requestTerminalFocus(activeThreadRef, terminalId);
+          const ownerThreadRef = scopeThreadRef(
+            session.target.environmentId,
+            session.target.threadId,
+          );
+          if (!isActiveThread) {
+            await navigate({
+              to: "/$environmentId/$threadId",
+              params: buildThreadRouteParams(ownerThreadRef),
+            });
+          }
+          requestTerminalFocus(ownerThreadRef, terminalId);
         },
       };
     });
-  }, [activeThreadRef, knownTerminalSessions, requestTerminalFocus]);
+  }, [
+    activeThreadId,
+    activeThreadRef,
+    knownTerminalSessions,
+    navigate,
+    projectThreadById,
+    requestTerminalFocus,
+  ]);
 
   const terminalWorktreePath = activeThread?.worktreePath ?? null;
   const terminalCwd = currentProjectCwd
