@@ -489,6 +489,16 @@ export function selectThreadTerminalUiState(
   );
 }
 
+export function selectThreadTerminalFocusRequest(
+  focusRequestByThreadKey: Record<string, number>,
+  threadRef: ScopedThreadRef | null | undefined,
+): number {
+  if (!threadRef || threadRef.threadId.length === 0) {
+    return 0;
+  }
+  return focusRequestByThreadKey[terminalThreadKey(threadRef)] ?? 0;
+}
+
 function updateTerminalUiStateByThreadKey(
   terminalUiStateByThreadKey: Record<string, ThreadTerminalUiState>,
   threadRef: ScopedThreadRef,
@@ -564,6 +574,12 @@ interface TerminalUiStateStoreState {
   terminalUiStateByThreadKey: Record<string, ThreadTerminalUiState>;
   /** Closed ids hidden from stale server metadata until that id is explicitly opened again. */
   suppressedTerminalIdsByThreadKey: Record<string, string[]>;
+  /**
+   * Ephemeral, non-persisted focus-request nonce per thread. Bumped whenever some part of the
+   * app (e.g. the command palette) wants to force the terminal drawer to (re)focus its active
+   * terminal, even when neither `terminalOpen` nor `activeTerminalId` actually changed.
+   */
+  focusRequestByThreadKey: Record<string, number>;
   setTerminalOpen: (threadRef: ScopedThreadRef, open: boolean) => void;
   setTerminalHeight: (threadRef: ScopedThreadRef, height: number) => void;
   splitTerminal: (threadRef: ScopedThreadRef, terminalId: string) => void;
@@ -580,6 +596,8 @@ interface TerminalUiStateStoreState {
   clearTerminalUiState: (threadRef: ScopedThreadRef) => void;
   removeTerminalUiState: (threadRef: ScopedThreadRef) => void;
   removeOrphanedTerminalUiStates: (activeThreadKeys: Set<string>) => void;
+  /** Ensures the terminal is open/active, then bumps its focus-request nonce. */
+  requestTerminalFocus: (threadRef: ScopedThreadRef, terminalId: string) => void;
 }
 
 export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
@@ -625,6 +643,7 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
       return {
         terminalUiStateByThreadKey: {},
         suppressedTerminalIdsByThreadKey: {},
+        focusRequestByThreadKey: {},
         setTerminalOpen: (threadRef, open) => {
           const terminalState = selectThreadTerminalUiState(
             get().terminalUiStateByThreadKey,
@@ -682,6 +701,28 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
           ),
         setActiveTerminal: (threadRef, terminalId) =>
           updateTerminal(threadRef, (state) => setThreadActiveTerminal(state, terminalId)),
+        requestTerminalFocus: (threadRef, terminalId) => {
+          updateTerminal(
+            threadRef,
+            (state) => {
+              let nextState = state;
+              if (!state.terminalIds.includes(terminalId)) {
+                nextState = newThreadTerminal(nextState, terminalId);
+              }
+              nextState = setThreadActiveTerminal(nextState, terminalId);
+              nextState = setThreadTerminalOpen(nextState, true);
+              return normalizeThreadTerminalUiState(nextState);
+            },
+            { terminalId, suppressed: false },
+          );
+          const threadKey = terminalThreadKey(threadRef);
+          set((state) => ({
+            focusRequestByThreadKey: {
+              ...state.focusRequestByThreadKey,
+              [threadKey]: (state.focusRequestByThreadKey[threadKey] ?? 0) + 1,
+            },
+          }));
+        },
         closeTerminal: (threadRef, terminalId) =>
           updateTerminal(threadRef, (state) => closeThreadTerminal(state, terminalId), {
             terminalId,
@@ -728,7 +769,8 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
             const hadTerminalUiState = state.terminalUiStateByThreadKey[threadKey] !== undefined;
             const hadSuppressedTerminalIds =
               state.suppressedTerminalIdsByThreadKey[threadKey] !== undefined;
-            if (!hadTerminalUiState && !hadSuppressedTerminalIds) {
+            const hadFocusRequest = state.focusRequestByThreadKey[threadKey] !== undefined;
+            if (!hadTerminalUiState && !hadSuppressedTerminalIds && !hadFocusRequest) {
               return state;
             }
             return {
@@ -740,6 +782,7 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
                 state.suppressedTerminalIdsByThreadKey,
                 threadKey,
               ),
+              focusRequestByThreadKey: removeRecordEntry(state.focusRequestByThreadKey, threadKey),
             };
           }),
         removeOrphanedTerminalUiStates: (activeThreadKeys) =>
@@ -748,6 +791,7 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
               [
                 ...Object.keys(state.terminalUiStateByThreadKey),
                 ...Object.keys(state.suppressedTerminalIdsByThreadKey),
+                ...Object.keys(state.focusRequestByThreadKey),
               ].filter((key) => !activeThreadKeys.has(key)),
             );
             if (orphanedIds.size === 0) {
@@ -757,13 +801,16 @@ export const useTerminalUiStateStore = create<TerminalUiStateStoreState>()(
             const nextSuppressedTerminalIdsByThreadKey = {
               ...state.suppressedTerminalIdsByThreadKey,
             };
+            const nextFocusRequestByThreadKey = { ...state.focusRequestByThreadKey };
             for (const id of orphanedIds) {
               delete nextTerminalUiStateByThreadKey[id];
               delete nextSuppressedTerminalIdsByThreadKey[id];
+              delete nextFocusRequestByThreadKey[id];
             }
             return {
               terminalUiStateByThreadKey: nextTerminalUiStateByThreadKey,
               suppressedTerminalIdsByThreadKey: nextSuppressedTerminalIdsByThreadKey,
+              focusRequestByThreadKey: nextFocusRequestByThreadKey,
             };
           }),
       };
